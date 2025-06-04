@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ToDo+ Augmentée</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1><i class="fas fa-tasks"></i> ToDo+ Augmentée</h1>
+            <div class="header-actions">
+                <button id="exportBtn" class="btn btn-secondary">
+                    <i class="fas fa-download"></i> Exporter JSON
+                </button>
+                <span id="taskCounter" class="task-counter">0 tâches</span>
+            </div>
+        </header>
+
+        <!-- Formulaire d'ajout -->
+        <section class="add-task-section">
+            <div class="input-container">
+                <div class="text-input-group">
+                    <input type="text" id="taskTitle" placeholder="Titre de la tâche..." maxlength="100">
+                    <button id="voiceBtn" class="voice-btn" title="Saisie vocale">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    <button id="testMicBtn" class="btn btn-small" title="Tester le microphone">
+                        🎤 Test
+                    </button>
+                </div>
+                
+                <div class="form-row">
+                    <textarea id="taskDescription" placeholder="Description (optionnelle)..." rows="2"></textarea>
+                </div>
+                
+                <div class="form-row">
+                    <select id="taskPriority">
+                        <option value="low">🟢 Basse priorité</option>
+                        <option value="medium" selected>🟡 Priorité moyenne</option>
+                        <option value="high">🟠 Haute priorité</option>
+                        <option value="urgent">🔴 Urgent</option>
+                    </select>
+                    
+                    <input type="date" id="taskDueDate">
+                    
+                    <input type="text" id="taskTags" placeholder="Tags (séparés par ,)">
+                </div>
+                
+                <button id="addTaskBtn" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Ajouter la tâche
+                </button>
+            </div>
+
+            <!-- Indicateur vocal -->
+            <div id="voiceIndicator" class="voice-indicator hidden">
+                <div class="voice-wave">
+                    <span></span><span></span><span></span>
+                </div>
+                <p>🎤 Je vous écoute...</p>
+                <button id="stopVoiceBtn" class="btn btn-small">Arrêter</button>
+            </div>
+        </section>
+
+        <!-- Filtres -->
+        <section class="filters">
+            <div class="filter-group">
+                <button class="filter-btn active" data-filter="all">Toutes</button>
+                <button class="filter-btn" data-filter="todo">À faire</button>
+                <button class="filter-btn" data-filter="in_progress">En cours</button>
+                <button class="filter-btn" data-filter="completed">Terminées</button>
+            </div>
+            
+            <div class="sort-group">
+                <select id="sortSelect">
+                    <option value="date">Trier par date</option>
+                    <option value="priority">Trier par priorité</option>
+                    <option value="stress">Trier par stress</option>
+                    <option value="title">Trier par titre</option>
+                </select>
+            </div>
+        </section>
+
+        <!-- Liste des tâches -->
+        <section class="tasks-section">
+            <div id="tasksList" class="tasks-list">
+                <!-- Les tâches seront ajoutées ici dynamiquement -->
+            </div>
+            
+            <div id="emptyState" class="empty-state">
+                <i class="fas fa-clipboard-list"></i>
+                <h3>Aucune tâche pour le moment</h3>
+                <p>Ajoutez votre première tâche ci-dessus ou utilisez la commande vocale!</p>
+            </div>
+        </section>
+
+        <!-- Modal d'édition -->
+        <div id="editModal" class="modal hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-edit"></i> Modifier la tâche</h3>
+                    <button id="closeModal" class="close-btn">&times;</button>
+                </div>
+                
+                <div class="modal-body">
+                    <div class="form-row">
+                        <input type="text" id="editTitle" placeholder="Titre">
+                    </div>
+                    
+                    <div class="form-row">
+                        <textarea id="editDescription" placeholder="Description" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="form-row">
+                        <select id="editPriority">
+                            <option value="low">🟢 Basse priorité</option>
+                            <option value="medium">🟡 Priorité moyenne</option>
+                            <option value="high">🟠 Haute priorité</option>
+                            <option value="urgent">🔴 Urgent</option>
+                        </select>
+                        
+                        <input type="date" id="editDueDate">
+                    </div>
+                    
+                    <div class="form-row">
+                        <input type="text" id="editTags" placeholder="Tags">
+                    </div>
+                </div>
+                
+                <div class="modal-footer">
+                    <button id="cancelEdit" class="btn btn-secondary">Annuler</button>
+                    <button id="saveEdit" class="btn btn-primary">Sauvegarder</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de réécriture IA -->
+        <!-- Modal de réécriture IA - VERSION SIMPLIFIÉE -->
+<div id="rewriteModal" class="modal hidden">
+    <div class="modal-content rewrite-modal">
+        <div class="modal-header">
+            <h3><i class="fas fa-pen-fancy"></i> Réécriture Professionnelle IA</h3>
+            <button id="closeRewriteModal" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+            <div class="rewrite-section">
+                <h4>🎯 Que voulez-vous réécrire ?</h4>
+                <div class="rewrite-target">
+                    <label>
+                        <input type="radio" name="rewriteTarget" value="title" checked>
+                        <span>📝 Titre seulement</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="rewriteTarget" value="description">
+                        <span>📄 Description seulement</span>
+                    </label>
+                </div>
+            </div>
+            
+            <div class="rewrite-section">
+                <h4>📝 Version originale :</h4>
+                <div id="originalText" class="text-box original"></div>
+            </div>
+            
+            <div class="rewrite-section">
+                <h4>✨ Version professionnelle (IA) :</h4>
+                <div id="rewrittenText" class="text-box rewritten">
+                    <div class="loading-rewrite">
+                        <div class="ai-spinner"></div>
+                        <p>🤖 Perplexity AI reformule votre texte...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="rewrite-options">
+                <label for="rewriteStyle">Style de réécriture :</label>
+                <select id="rewriteStyle">
+                    <option value="professional">🎯 Professionnel</option>
+                    <option value="correct">✏️ Corriger les fautes</option>
+                    <option value="formal">📋 Formel</option>
+                    <option value="concise">⚡ Concis</option>
+                    <option value="detailed">📝 Détaillé</option>
+                    <option value="friendly">😊 Amical</option>
+                    <option value="technical">🔧 Technique</option>
+                </select>
+                <button id="regenerateBtn" class="btn btn-secondary">
+                    <i class="fas fa-redo"></i> Régénérer
+                </button>
+            </div>
+        </div>
+        
+        <div class="modal-footer">
+            <button id="cancelRewrite" class="btn btn-secondary">Annuler</button>
+            <button id="acceptRewrite" class="btn btn-primary">
+                <i class="fas fa-check"></i> Accepter la réécriture
+            </button>
+        </div>
+    </div>
+</div>
+
+        <!-- Notifications -->
+        <div id="notifications" class="notifications"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

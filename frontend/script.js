@@ -1,5 +1,5 @@
 // Configuration de l'API
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = '/groupe2/api';
 
 // État global de l'application
 let tasks = [];

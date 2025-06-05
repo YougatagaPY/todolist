@@ -8,10 +8,12 @@ let currentSort = 'date';
 let isRecording = false;
 let recognition = null;
 let editingTaskId = null;
+let recognitionTimeout = null;
 
 // Variables pour la réécriture IA
 let currentRewriteTaskId = null;
 let currentRewrittenText = '';
+let currentRewriteTarget = 'title';
 
 // Éléments DOM
 const elements = {
@@ -51,36 +53,32 @@ const elements = {
   notifications: document.getElementById('notifications')
 };
 
-// Initialisation de l'application
+// ================================
+// INITIALISATION
+// ================================
+
 document.addEventListener('DOMContentLoaded', () => {
   initializeApp();
   setupEventListeners();
   setupSpeechRecognition();
 });
 
-// Initialisation
 async function initializeApp() {
   showNotification('Chargement des tâches...', 'info');
   await loadTasks();
   updateUI();
 }
 
-// Configuration des événements
+// ================================
+// GESTION DES ÉVÉNEMENTS
+// ================================
+
 function setupEventListeners() {
   // Ajout de tâche
   elements.addTaskBtn.addEventListener('click', handleAddTask);
   elements.taskTitle.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handleAddTask();
   });
-
-  // Commande vocale
-  elements.voiceBtn.addEventListener('click', toggleVoiceRecording);
-  elements.stopVoiceBtn.addEventListener('click', stopVoiceRecording);
-  
-  // Test du microphone
-  if (elements.testMicBtn) {
-    elements.testMicBtn.addEventListener('click', testMicrophone);
-  }
 
   // Filtres et tri
   elements.filterBtns.forEach(btn => {
@@ -113,14 +111,54 @@ function setupEventListeners() {
     if (e.key === 'Escape') {
       closeEditModal();
       closeRewriteModal();
+      if (isRecording) stopVoiceRecording();
     }
   });
+
+  // Nettoyage avant fermeture de page
+  window.addEventListener('beforeunload', cleanupSpeechRecognition);
 }
 
-// Configuration de la reconnaissance vocale
+function setupVoiceEventListeners() {
+  // Supprimer les anciens listeners pour éviter les doublons
+  if (elements.voiceBtn) {
+    const newVoiceBtn = elements.voiceBtn.cloneNode(true);
+    elements.voiceBtn.parentNode.replaceChild(newVoiceBtn, elements.voiceBtn);
+    elements.voiceBtn = newVoiceBtn;
+    elements.voiceBtn.addEventListener('click', toggleVoiceRecording);
+  }
+
+  if (elements.stopVoiceBtn) {
+    const newStopBtn = elements.stopVoiceBtn.cloneNode(true);
+    elements.stopVoiceBtn.parentNode.replaceChild(newStopBtn, elements.stopVoiceBtn);
+    elements.stopVoiceBtn = newStopBtn;
+    elements.stopVoiceBtn.addEventListener('click', stopVoiceRecording);
+  }
+
+  if (elements.testMicBtn) {
+    const newTestBtn = elements.testMicBtn.cloneNode(true);
+    elements.testMicBtn.parentNode.replaceChild(newTestBtn, elements.testMicBtn);
+    elements.testMicBtn = newTestBtn;
+    elements.testMicBtn.addEventListener('click', testMicrophone);
+  }
+}
+
+// ================================
+// RECONNAISSANCE VOCALE
+// ================================
+
 function setupSpeechRecognition() {
+  // Vérification du support HTTPS/localhost
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+    console.warn('⚠️ La reconnaissance vocale nécessite HTTPS ou localhost');
+    hideVoiceElements();
+    showNotification('La reconnaissance vocale nécessite HTTPS ou localhost', 'warning');
+    return;
+  }
+
   if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    elements.voiceBtn.style.display = 'none';
+    console.error('❌ SpeechRecognition non supporté');
+    hideVoiceElements();
     showNotification('La reconnaissance vocale n\'est pas supportée par votre navigateur', 'warning');
     return;
   }
@@ -128,47 +166,88 @@ function setupSpeechRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   recognition = new SpeechRecognition();
   
+  // Configuration optimisée
   recognition.continuous = false;
   recognition.interimResults = false;
   recognition.lang = 'fr-FR';
   recognition.maxAlternatives = 1;
+  
+  // Configuration pour WebKit
+  if ('webkitSpeechRecognition' in window) {
+    recognition.webkitContinuous = false;
+    recognition.webkitInterimResults = false;
+  }
 
+  // Événements de reconnaissance
   recognition.onstart = () => {
     console.log('🎤 Reconnaissance vocale démarrée');
     isRecording = true;
     elements.voiceBtn.classList.add('recording');
+    elements.voiceBtn.innerHTML = '<i class="fas fa-stop"></i>';
     elements.voiceIndicator.classList.remove('hidden');
-    showNotification('🎤 Parlez maintenant...', 'info');
+    showNotification('🎤 Parlez maintenant... (cliquez pour arrêter)', 'info');
   };
 
   recognition.onresult = (event) => {
     console.log('🎯 Résultat reçu:', event);
-    const transcript = event.results[0][0].transcript;
-    const confidence = event.results[0][0].confidence;
-    console.log(`Texte: "${transcript}", Confiance: ${confidence}`);
-    handleVoiceResult(transcript);
+    
+    if (event.results && event.results.length > 0) {
+      const result = event.results[0];
+      
+      if (result && result[0]) {
+        const transcript = result[0].transcript.trim();
+        const confidence = result[0].confidence || 0;
+        
+        console.log(`✅ Texte: "${transcript}", Confiance: ${confidence}`);
+        
+        if (transcript && transcript.length > 2) {
+          handleVoiceResult(transcript);
+        } else {
+          console.log('❌ Transcript trop court');
+          showNotification('Texte trop court, veuillez réessayer', 'warning');
+        }
+      }
+    } else {
+      showNotification('Aucun résultat de reconnaissance, veuillez réessayer', 'warning');
+    }
   };
 
   recognition.onerror = (event) => {
-    console.error('❌ Erreur de reconnaissance vocale:', event.error);
+    console.error('❌ Erreur reconnaissance:', event.error);
+    
+    // Nettoyer le timeout
+    if (recognitionTimeout) {
+      clearTimeout(recognitionTimeout);
+      recognitionTimeout = null;
+    }
+    
     let errorMessage = 'Erreur de reconnaissance vocale';
     
     switch(event.error) {
       case 'not-allowed':
-        errorMessage = 'Microphone non autorisé. Veuillez autoriser l\'accès au microphone.';
+        errorMessage = '🚫 Microphone non autorisé. Cliquez sur l\'icône 🔒 dans la barre d\'adresse.';
         break;
       case 'no-speech':
-        errorMessage = 'Aucune parole détectée. Réessayez.';
+        errorMessage = '🔇 Aucune parole détectée. Parlez plus fort.';
         break;
       case 'network':
-        errorMessage = 'Erreur réseau. Vérifiez votre connexion.';
+        errorMessage = '🌐 Erreur réseau. Vérifiez votre connexion.';
         break;
       case 'audio-capture':
-        errorMessage = 'Microphone non disponible.';
+        errorMessage = '🎤 Microphone non disponible.';
         break;
       case 'service-not-allowed':
-        errorMessage = 'Service de reconnaissance non autorisé. Utilisez HTTPS ou localhost.';
+        errorMessage = '⚠️ Service non autorisé. Utilisez HTTPS ou localhost.';
         break;
+      case 'aborted':
+        if (isRecording) {
+          errorMessage = '⏹️ Reconnaissance annulée.';
+        } else {
+          return; // Arrêt volontaire
+        }
+        break;
+      default:
+        errorMessage = `Erreur: ${event.error}`;
     }
     
     showNotification(errorMessage, 'error');
@@ -176,19 +255,26 @@ function setupSpeechRecognition() {
   };
 
   recognition.onend = () => {
-    console.log('🔚 Reconnaissance vocale terminée');
+    console.log('🔚 Reconnaissance terminée');
     stopVoiceRecording();
   };
 
-  recognition.onnomatch = () => {
-    console.log('❓ Aucune correspondance trouvée');
-    showNotification('Texte non reconnu, veuillez répéter', 'warning');
-    stopVoiceRecording();
+  recognition.onspeechstart = () => {
+    console.log('🗣️ Parole détectée');
+    showNotification('Parole détectée...', 'info');
   };
+
+  recognition.onspeechend = () => {
+    console.log('🤐 Fin de parole');
+  };
+
+  console.log('✅ Reconnaissance vocale initialisée');
+  setupVoiceEventListeners();
 }
 
-// Gestion de la commande vocale
 function toggleVoiceRecording() {
+  console.log('🎯 Toggle voice recording, isRecording:', isRecording);
+  
   if (isRecording) {
     stopVoiceRecording();
   } else {
@@ -198,64 +284,97 @@ function toggleVoiceRecording() {
 
 function startVoiceRecording() {
   if (!recognition) {
-    showNotification('Reconnaissance vocale non initialisée', 'error');
+    console.error('❌ Recognition non initialisée');
+    showNotification('Reconnaissance vocale non initialisée. Rechargez la page.', 'error');
+    return;
+  }
+
+  if (isRecording) {
+    console.warn('⚠️ Reconnaissance déjà en cours');
     return;
   }
   
   try {
-    console.log('🚀 Tentative de démarrage de la reconnaissance...');
-    recognition.start();
+    console.log('🚀 Démarrage reconnaissance...');
+    
+    // Reset état
+    isRecording = false;
+    
+    // Timeout de sécurité (30 secondes)
+    recognitionTimeout = setTimeout(() => {
+      console.log('⏰ Timeout reconnaissance');
+      stopVoiceRecording();
+      showNotification('Timeout de reconnaissance (30s)', 'warning');
+    }, 30000);
+    
+    // Vérifier permissions microphone d'abord
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        // Fermer immédiatement, on voulait juste vérifier
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Démarrer reconnaissance
+        recognition.start();
+        console.log('🎤 Recognition.start() appelée');
+      })
+      .catch(error => {
+        console.error('❌ Erreur permissions:', error);
+        
+        if (recognitionTimeout) {
+          clearTimeout(recognitionTimeout);
+          recognitionTimeout = null;
+        }
+        
+        if (error.name === 'NotAllowedError') {
+          showNotification('🚫 Veuillez autoriser l\'accès au microphone', 'error');
+        } else {
+          showNotification('❌ Erreur microphone: ' + error.message, 'error');
+        }
+      });
+      
   } catch (error) {
-    console.error('Erreur lors du démarrage:', error);
-    showNotification('Impossible de démarrer la reconnaissance vocale', 'error');
+    console.error('❌ Erreur démarrage:', error);
+    
+    if (recognitionTimeout) {
+      clearTimeout(recognitionTimeout);
+      recognitionTimeout = null;
+    }
+    
+    showNotification('Impossible de démarrer la reconnaissance: ' + error.message, 'error');
   }
 }
 
 function stopVoiceRecording() {
-  if (recognition && isRecording) {
-    recognition.stop();
+  console.log('🛑 Arrêt reconnaissance');
+  
+  // Nettoyer timeout
+  if (recognitionTimeout) {
+    clearTimeout(recognitionTimeout);
+    recognitionTimeout = null;
   }
+  
+  if (recognition && isRecording) {
+    try {
+      recognition.stop();
+      console.log('🛑 recognition.stop() appelée');
+    } catch (error) {
+      console.error('Erreur arrêt:', error);
+    }
+  }
+  
+  // Reset complet état
   isRecording = false;
   elements.voiceBtn.classList.remove('recording');
+  elements.voiceBtn.innerHTML = '<i class="fas fa-microphone"></i>';
   elements.voiceIndicator.classList.add('hidden');
 }
 
-// Test du microphone
-async function testMicrophone() {
-  try {
-    showNotification('Test du microphone...', 'info');
-    
-    // Demander l'autorisation explicitement
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    
-    // Fermer le stream immédiatement
-    stream.getTracks().forEach(track => track.stop());
-    
-    showNotification('✅ Microphone autorisé ! Vous pouvez utiliser la reconnaissance vocale.', 'success');
-    
-    // Vérifier si la reconnaissance vocale est disponible
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      showNotification('🎤 Reconnaissance vocale prête !', 'success');
-    }
-    
-  } catch (error) {
-    console.error('Erreur test microphone:', error);
-    
-    let message = 'Erreur d\'accès au microphone';
-    if (error.name === 'NotAllowedError') {
-      message = '❌ Accès au microphone refusé. Veuillez autoriser dans les paramètres du navigateur.';
-    } else if (error.name === 'NotFoundError') {
-      message = '❌ Aucun microphone détecté.';
-    }
-    
-    showNotification(message, 'error');
-  }
-}
-
 async function handleVoiceResult(transcript) {
+  console.log(`🎯 Traitement résultat vocal: "${transcript}"`);
   showNotification(`Texte reconnu: "${transcript}"`, 'info');
   
   try {
+    // Essayer l'API pour analyse intelligente
     const response = await fetch(`${API_BASE_URL}/tasks/voice`, {
       method: 'POST',
       headers: {
@@ -268,33 +387,159 @@ async function handleVoiceResult(transcript) {
       const newTask = await response.json();
       tasks.unshift(newTask);
       updateUI();
-      showNotification('Tâche créée par commande vocale!', 'success');
+      showNotification('✅ Tâche créée par commande vocale!', 'success');
     } else {
-      throw new Error('Erreur lors de la création de la tâche vocale');
+      throw new Error('Erreur API création tâche vocale');
     }
   } catch (error) {
-    console.error('Erreur:', error);
-    showNotification('Erreur lors de la création de la tâche vocale', 'error');
+    console.error('Erreur API:', error);
+    console.log('📝 Fallback: remplissage formulaire');
     
     // Fallback: remplir le formulaire
     elements.taskTitle.value = transcript;
     elements.taskTitle.focus();
+    showNotification('Texte ajouté au formulaire. Créez la tâche manuellement.', 'warning');
   }
 }
 
-// ✍️ RÉÉCRITURE IA PROFESSIONNELLE
-let currentRewriteTarget = 'title'; // Par défaut, on réécrit le titre
+async function testMicrophone() {
+  try {
+    console.log('🔍 Test microphone...');
+    showNotification('Test microphone en cours...', 'info');
+    
+    const constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    };
+    
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    
+    const audioTracks = stream.getAudioTracks();
+    console.log('🎤 Pistes audio:', audioTracks.length);
+    
+    if (audioTracks.length === 0) {
+      throw new Error('Aucune piste audio disponible');
+    }
+    
+    // Test niveau audio
+    const audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    const analyser = audioContext.createAnalyser();
+    source.connect(analyser);
+    
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    
+    let hasAudio = false;
+    const testDuration = 2000;
+    const startTime = Date.now();
+    
+    const checkAudio = () => {
+      analyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+      
+      if (average > 10) {
+        hasAudio = true;
+      }
+      
+      if (Date.now() - startTime < testDuration && !hasAudio) {
+        requestAnimationFrame(checkAudio);
+      } else {
+        // Nettoyer
+        stream.getTracks().forEach(track => track.stop());
+        audioContext.close();
+        
+        if (hasAudio) {
+          showNotification('✅ Microphone fonctionne ! Son détecté.', 'success');
+        } else {
+          showNotification('⚠️ Microphone autorisé mais aucun son détecté.', 'warning');
+        }
+      }
+    };
+    
+    checkAudio();
+    
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      showNotification('🎤 Reconnaissance vocale disponible !', 'success');
+    }
+    
+  } catch (error) {
+    console.error('❌ Erreur test microphone:', error);
+    
+    let message = 'Erreur accès microphone';
+    if (error.name === 'NotAllowedError') {
+      message = '❌ Accès microphone refusé. Autorisez dans le navigateur.';
+    } else if (error.name === 'NotFoundError') {
+      message = '❌ Aucun microphone détecté.';
+    } else if (error.name === 'NotReadableError') {
+      message = '❌ Microphone utilisé par autre application.';
+    } else {
+      message = `❌ Erreur microphone: ${error.message}`;
+    }
+    
+    showNotification(message, 'error');
+  }
+}
+
+function hideVoiceElements() {
+  if (elements.voiceBtn) elements.voiceBtn.style.display = 'none';
+  if (elements.testMicBtn) elements.testMicBtn.style.display = 'none';
+}
+
+function cleanupSpeechRecognition() {
+  if (recognitionTimeout) {
+    clearTimeout(recognitionTimeout);
+    recognitionTimeout = null;
+  }
+  
+  if (recognition && isRecording) {
+    try {
+      recognition.stop();
+    } catch (e) {
+      // Ignorer erreurs de nettoyage
+    }
+  }
+  
+  isRecording = false;
+}
+
+function diagnoseSpeechRecognition() {
+  console.log('🔍 === DIAGNOSTIC RECONNAISSANCE VOCALE ===');
+  console.log('🌐 Protocol:', location.protocol);
+  console.log('🏠 Hostname:', location.hostname);
+  console.log('🎤 SpeechRecognition:', 'SpeechRecognition' in window);
+  console.log('🎤 webkitSpeechRecognition:', 'webkitSpeechRecognition' in window);
+  console.log('📱 User Agent:', navigator.userAgent);
+  console.log('🔊 Media Devices:', !!navigator.mediaDevices);
+  console.log('🎥 getUserMedia:', !!navigator.mediaDevices?.getUserMedia);
+  
+  navigator.permissions?.query({ name: 'microphone' })
+    .then(permission => {
+      console.log('🔒 Permission microphone:', permission.state);
+    })
+    .catch(e => console.log('🔒 Impossible vérifier permissions:', e));
+    
+  console.log('🔍 === FIN DIAGNOSTIC ===');
+}
+
+// Mode debug
+if (window.location.search.includes('debug')) {
+  document.addEventListener('DOMContentLoaded', diagnoseSpeechRecognition);
+}
+
+// ================================
+// RÉÉCRITURE IA
+// ================================
 
 async function handleRewriteTask(taskId) {
   const task = tasks.find(t => t.id === taskId);
   if (!task) return;
 
   currentRewriteTaskId = taskId;
-  
-  // Ouvrir la modal d'abord
   elements.rewriteModal.classList.remove('hidden');
   
-  // Ajouter les event listeners pour les boutons radio
   const radioButtons = document.querySelectorAll('input[name="rewriteTarget"]');
   radioButtons.forEach(radio => {
     radio.addEventListener('change', () => {
@@ -303,61 +548,56 @@ async function handleRewriteTask(taskId) {
     });
   });
   
-  // Définir le texte original selon la sélection
   updateOriginalText(task);
-  
-  // Lancer la réécriture automatiquement
   await performRewrite(task);
 }
 
 function updateOriginalText(task) {
-    const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
-    let originalContent = '';
-    
-    switch (selectedTarget) {
-      case 'title':
-        originalContent = task.title;
-        break;
-      case 'description':
-        originalContent = task.description || '(Aucune description)';
-        break;
-      case 'both':
-        originalContent = `📝 Titre: ${task.title}\n\n📄 Description: ${task.description || '(Aucune description)'}`;
-        break;
-    }
-    
-    elements.originalText.textContent = originalContent;
+  const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
+  let originalContent = '';
+  
+  switch (selectedTarget) {
+    case 'title':
+      originalContent = task.title;
+      break;
+    case 'description':
+      originalContent = task.description || '(Aucune description)';
+      break;
+    case 'both':
+      originalContent = `📝 Titre: ${task.title}\n\n📄 Description: ${task.description || '(Aucune description)'}`;
+      break;
   }
+  
+  elements.originalText.textContent = originalContent;
+}
 
 async function performRewrite(task) {
-    const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
-    let textToRewrite = '';
-    
-    switch (selectedTarget) {
-      case 'title':
-        textToRewrite = task.title;
-        break;
-      case 'description':
-        textToRewrite = task.description || 'Aucune description disponible';
-        // Si pas de description, utiliser le titre comme base
-        if (!task.description || task.description.trim() === '') {
-          textToRewrite = `Développer une description pour: ${task.title}`;
-        }
-        break;
-      case 'both':
-        // Pour "both", on structure le texte pour indiquer à l'IA ce qu'on veut
-        if (task.description && task.description.trim()) {
-          textToRewrite = `Titre: ${task.title}\n\nDescription: ${task.description}`;
-        } else {
-          textToRewrite = `Créer un titre professionnel et une description détaillée pour cette tâche: ${task.title}`;
-        }
-        break;
-    }
-    
-    await rewriteWithMistral(textToRewrite);
+  const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
+  let textToRewrite = '';
+  
+  switch (selectedTarget) {
+    case 'title':
+      textToRewrite = task.title;
+      break;
+    case 'description':
+      textToRewrite = task.description || 'Aucune description disponible';
+      if (!task.description || task.description.trim() === '') {
+        textToRewrite = `Développer une description pour: ${task.title}`;
+      }
+      break;
+    case 'both':
+      if (task.description && task.description.trim()) {
+        textToRewrite = `Titre: ${task.title}\n\nDescription: ${task.description}`;
+      } else {
+        textToRewrite = `Créer un titre professionnel et une description détaillée pour cette tâche: ${task.title}`;
+      }
+      break;
   }
+  
+  await rewriteWithPerplexity(textToRewrite);
+}
 
-async function rewriteWithMistral(text, style = 'professional') {
+async function rewriteWithPerplexity(text, style = 'professional') {
   elements.rewrittenText.innerHTML = `
     <div class="loading-rewrite">
       <div class="ai-spinner"></div>
@@ -384,11 +624,10 @@ async function rewriteWithMistral(text, style = 'professional') {
     const result = await response.json();
     
     if (result.success) {
-      // Nettoyer le texte réécrit (enlever les guillemets et espaces inutiles)
       currentRewrittenText = result.rewrittenText
-        .replace(/^["']|["']$/g, '')    // Enlever guillemets début/fin
-        .replace(/^"|"$/g, '')          // Enlever doubles guillemets
-        .replace(/^\s+|\s+$/g, '')      // Enlever espaces début/fin
+        .replace(/^["']|["']$/g, '')
+        .replace(/^"|"$/g, '')
+        .replace(/^\s+|\s+$/g, '')
         .trim();
         
       elements.rewrittenText.innerHTML = `
@@ -400,7 +639,7 @@ async function rewriteWithMistral(text, style = 'professional') {
     }
     
   } catch (error) {
-    console.error('Erreur réécriture Mistral:', error);
+    console.error('Erreur réécriture:', error);
     elements.rewrittenText.innerHTML = `
       <div style="color: #ef4444; text-align: center; padding: 20px;">
         ❌ Erreur lors de la réécriture<br>
@@ -431,138 +670,119 @@ async function regenerateRewrite() {
       break;
   }
   
-  await rewriteWithMistral(textToRewrite, selectedStyle);
+  await rewriteWithPerplexity(textToRewrite, selectedStyle);
 }
 
 async function acceptRewrite() {
-    if (!currentRewriteTaskId || !currentRewrittenText) {
-      showNotification('Aucune réécriture à accepter', 'warning');
-      return;
-    }
-  
-    try {
-      const task = tasks.find(t => t.id === currentRewriteTaskId);
-      if (!task) return;
-      
-      const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
-  
-      // Nettoyer le texte réécrit (enlever les guillemets)
-      let cleanedText = currentRewrittenText
-        .replace(/^["']|["']$/g, '')  // Enlever les guillemets au début et à la fin
-        .replace(/^"|"$/g, '')        // Enlever les doubles guillemets
-        .trim();
-  
-      let updates = {};
-  
-      switch (selectedTarget) {
-        case 'title':
-          // Réécrire seulement le titre, GARDER la description originale
-          updates.title = cleanedText.length > 100 ? cleanedText.substring(0, 100).trim() + '...' : cleanedText;
-          updates.description = task.description || ''; // Garder la description actuelle
-          break;
-          
-        case 'description':
-          // Réécrire seulement la description, GARDER le titre original
-          updates.title = task.title; // Garder le titre actuel
-          updates.description = cleanedText;
-          break;
-          
-        case 'both':
-          // Réécrire titre et description - MEILLEURE LOGIQUE DE SÉPARATION
-          // Chercher des séparateurs naturels
-          let titlePart = '';
-          let descriptionPart = '';
-          
-          // Méthode 1: Chercher un point suivi d'une majuscule ou retour à la ligne
-          const sentenceSplit = cleanedText.match(/^([^.!?]*[.!?])\s*(.*)$/s);
-          if (sentenceSplit && sentenceSplit[1].length < 120) {
-            titlePart = sentenceSplit[1].replace(/[.!?]$/, '').trim();
-            descriptionPart = sentenceSplit[2].trim();
-          }
-          // Méthode 2: Chercher un retour à la ligne
-          else if (cleanedText.includes('\n')) {
-            const lines = cleanedText.split('\n').filter(line => line.trim());
-            titlePart = lines[0].trim();
-            descriptionPart = lines.slice(1).join('\n').trim();
-          }
-          // Méthode 3: Chercher une virgule ou deux points après 30-80 caractères
-          else if (cleanedText.length > 80) {
-            const colonIndex = cleanedText.indexOf(':', 30);
-            const commaIndex = cleanedText.indexOf(',', 30);
-            
-            let splitIndex = -1;
-            if (colonIndex > 0 && colonIndex < 100) splitIndex = colonIndex;
-            else if (commaIndex > 0 && commaIndex < 100) splitIndex = commaIndex;
-            
-            if (splitIndex > 0) {
-              titlePart = cleanedText.substring(0, splitIndex).trim();
-              descriptionPart = cleanedText.substring(splitIndex + 1).trim();
-            } else {
-              // Fallback: couper au dernier espace avant 80 caractères
-              const spaceIndex = cleanedText.lastIndexOf(' ', 80);
-              if (spaceIndex > 30) {
-                titlePart = cleanedText.substring(0, spaceIndex).trim();
-                descriptionPart = cleanedText.substring(spaceIndex).trim();
-              }
-            }
-          }
-          
-          // Si aucune séparation trouvée, utiliser tout comme titre si court, sinon couper
-          if (!titlePart) {
-            if (cleanedText.length <= 100) {
-              titlePart = cleanedText;
-              descriptionPart = '';
-            } else {
-              const lastSpace = cleanedText.lastIndexOf(' ', 80);
-              titlePart = cleanedText.substring(0, lastSpace > 30 ? lastSpace : 80).trim();
-              descriptionPart = cleanedText.substring(lastSpace > 30 ? lastSpace : 80).trim();
-            }
-          }
-          
-          updates.title = titlePart;
-          updates.description = descriptionPart;
-          break;
-      }
-  
-      // Envoyer la mise à jour au serveur
-      const response = await fetch(`${API_BASE_URL}/tasks/${currentRewriteTaskId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(updates)
-      });
-  
-      if (response.ok) {
-        const updatedTask = await response.json();
-        const index = tasks.findIndex(t => t.id === currentRewriteTaskId);
-        tasks[index] = updatedTask;
-        closeRewriteModal();
-        updateUI();
-        
-        const targetNames = {
-          'title': 'titre',
-          'description': 'description',
-          'both': 'titre et description'
-        };
-        
-        showNotification(`✨ ${targetNames[selectedTarget]} réécrit(e) avec succès !`, 'success');
-        
-        // Debug: afficher ce qui a été sauvegardé
-        console.log('🔍 Mise à jour appliquée:', {
-          target: selectedTarget,
-          title: updates.title,
-          description: updates.description
-        });
-        
-      } else {
-        throw new Error('Erreur lors de la mise à jour');
-      }
-    } catch (error) {
-      console.error('Erreur:', error);
-      showNotification('Erreur lors de l\'application de la réécriture', 'error');
-    }
+  if (!currentRewriteTaskId || !currentRewrittenText) {
+    showNotification('Aucune réécriture à accepter', 'warning');
+    return;
   }
+
+  try {
+    const task = tasks.find(t => t.id === currentRewriteTaskId);
+    if (!task) return;
+    
+    const selectedTarget = document.querySelector('input[name="rewriteTarget"]:checked').value;
+
+    let cleanedText = currentRewrittenText
+      .replace(/^["']|["']$/g, '')
+      .replace(/^"|"$/g, '')
+      .trim();
+
+    let updates = {};
+
+    switch (selectedTarget) {
+      case 'title':
+        updates.title = cleanedText.length > 100 ? cleanedText.substring(0, 100).trim() + '...' : cleanedText;
+        updates.description = task.description || '';
+        break;
+        
+      case 'description':
+        updates.title = task.title;
+        updates.description = cleanedText;
+        break;
+        
+      case 'both':
+        let titlePart = '';
+        let descriptionPart = '';
+        
+        const sentenceSplit = cleanedText.match(/^([^.!?]*[.!?])\s*(.*)$/s);
+        if (sentenceSplit && sentenceSplit[1].length < 120) {
+          titlePart = sentenceSplit[1].replace(/[.!?]$/, '').trim();
+          descriptionPart = sentenceSplit[2].trim();
+        }
+        else if (cleanedText.includes('\n')) {
+          const lines = cleanedText.split('\n').filter(line => line.trim());
+          titlePart = lines[0].trim();
+          descriptionPart = lines.slice(1).join('\n').trim();
+        }
+        else if (cleanedText.length > 80) {
+          const colonIndex = cleanedText.indexOf(':', 30);
+          const commaIndex = cleanedText.indexOf(',', 30);
+          
+          let splitIndex = -1;
+          if (colonIndex > 0 && colonIndex < 100) splitIndex = colonIndex;
+          else if (commaIndex > 0 && commaIndex < 100) splitIndex = commaIndex;
+          
+          if (splitIndex > 0) {
+            titlePart = cleanedText.substring(0, splitIndex).trim();
+            descriptionPart = cleanedText.substring(splitIndex + 1).trim();
+          } else {
+            const spaceIndex = cleanedText.lastIndexOf(' ', 80);
+            if (spaceIndex > 30) {
+              titlePart = cleanedText.substring(0, spaceIndex).trim();
+              descriptionPart = cleanedText.substring(spaceIndex).trim();
+            }
+          }
+        }
+        
+        if (!titlePart) {
+          if (cleanedText.length <= 100) {
+            titlePart = cleanedText;
+            descriptionPart = '';
+          } else {
+            const lastSpace = cleanedText.lastIndexOf(' ', 80);
+            titlePart = cleanedText.substring(0, lastSpace > 30 ? lastSpace : 80).trim();
+            descriptionPart = cleanedText.substring(lastSpace > 30 ? lastSpace : 80).trim();
+          }
+        }
+        
+        updates.title = titlePart;
+        updates.description = descriptionPart;
+        break;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/tasks/${currentRewriteTaskId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(updates)
+    });
+
+    if (response.ok) {
+      const updatedTask = await response.json();
+      const index = tasks.findIndex(t => t.id === currentRewriteTaskId);
+      tasks[index] = updatedTask;
+      closeRewriteModal();
+      updateUI();
+      
+      const targetNames = {
+        'title': 'titre',
+        'description': 'description',
+        'both': 'titre et description'
+      };
+      
+      showNotification(`✨ ${targetNames[selectedTarget]} réécrit(e) avec succès !`, 'success');
+    } else {
+      throw new Error('Erreur lors de la mise à jour');
+    }
+  } catch (error) {
+    console.error('Erreur:', error);
+    showNotification('Erreur lors de l\'application de la réécriture', 'error');
+  }
+}
 
 function closeRewriteModal() {
   elements.rewriteModal.classList.add('hidden');
@@ -570,7 +790,10 @@ function closeRewriteModal() {
   currentRewrittenText = '';
 }
 
-// Gestion des tâches
+// ================================
+// GESTION DES TÂCHES
+// ================================
+
 async function handleAddTask() {
   const title = elements.taskTitle.value.trim();
   if (!title) {
@@ -768,7 +991,6 @@ function closeEditModal() {
   editingTaskId = null;
 }
 
-// Chargement des tâches
 async function loadTasks() {
   try {
     const response = await fetch(`${API_BASE_URL}/tasks`);
@@ -784,7 +1006,6 @@ async function loadTasks() {
   }
 }
 
-// Export JSON
 async function handleExport() {
   try {
     const response = await fetch(`${API_BASE_URL}/tasks/export`);
@@ -808,7 +1029,10 @@ async function handleExport() {
   }
 }
 
-// Filtres et tri
+// ================================
+// FILTRES ET TRI
+// ================================
+
 function handleFilterChange(filter) {
   currentFilter = filter;
   elements.filterBtns.forEach(btn => {
@@ -857,7 +1081,10 @@ function getFilteredAndSortedTasks() {
   return filteredTasks;
 }
 
-// Mise à jour de l'interface
+// ================================
+// INTERFACE UTILISATEUR
+// ================================
+
 function updateUI() {
   const filteredTasks = getFilteredAndSortedTasks();
   renderTasks(filteredTasks);
@@ -1017,7 +1244,10 @@ function updateTaskCounter() {
   elements.taskCounter.textContent = `${totalTasks} tâche${totalTasks > 1 ? 's' : ''} • ${todoTasks} à faire • ${inProgressTasks} en cours • ${completedTasks} terminée${completedTasks > 1 ? 's' : ''}`;
 }
 
-// Utilitaires
+// ================================
+// UTILITAIRES
+// ================================
+
 function clearForm() {
   elements.taskTitle.value = '';
   elements.taskDescription.value = '';

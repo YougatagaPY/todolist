@@ -13,9 +13,13 @@ jobs:
       - name: Cloner le dépôt
         uses: actions/checkout@v3
 
-      - name: Déploiement des fichiers sur le VPS via SCP
+      - name: Configurer la clé SSH
         run: |
-          echo "Déploiement des dossiers frontend et backend..."
-          scp -o StrictHostKeyChecking=no -r ./frontend ./backend ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_PATH }}
-        env:
-          SSH_PASS: ${{ secrets.VPS_PASSWORD }}
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Déployer les dossiers frontend et backend sur le VPS
+        run: |
+          scp -r ./frontend ./backend ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_PATH }}
